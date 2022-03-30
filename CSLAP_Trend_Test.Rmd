@@ -1,0 +1,161 @@
+---
+title: "CSLAP_Trend_Test"
+author: "Alene Onion"
+date: "3/30/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#  {.tabset}
+
+## data
+
+Sites included in this analysis had at least 3 samples prior to 1995 and at least 3 in 2010s. I can produce a map in the future.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+# setwd("C:/Users/leneo/Dropbox/Alene/Rscripts/Current")
+# source("new_database/Reading.LMAS.Data.R")
+# setwd("C:/Users/leneo/Dropbox/Alene/Rscripts/CSLAP_Trend_Test")
+
+# setwd("C:/Users/amonion/New York State Office of Information Technology Services/BWAM - Lakes Database/Current")
+# source("new_database/Reading.LMAS.Data.R")
+# setwd("C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/CSLAP_Trend_Test")
+
+rm(list=setdiff(ls(), c("newdata")))
+library(lubridate)
+library(tidyverse)
+library(xts)
+draft<-newdata %>% 
+  filter(CHARACTERISTIC_NAME=="TEMPERATURE",INFORMATION_TYPE=="OW") %>% 
+  filter(RSLT_VALIDATOR_QUALIFIER!="R"|is.na(RSLT_VALIDATOR_QUALIFIER)) %>% 
+  filter(!is.na(RSLT_RESULT_VALUE)) %>% 
+  select(LAKE_HISTORY_ID,LOCATION_HISTORY_ID,LOCATION_WATERBODY_CLASSIFICATION,LOCATION_X_COORDINATE,LOCATION_Y_COORDINATE,SAMPLE_DATE,RSLT_RESULT_VALUE) %>%
+  distinct() %>% 
+    mutate(year=as.numeric(substr(SAMPLE_DATE,1,4)),
+         decade = year - year %% 10,
+         dyear=decimal_date(SAMPLE_DATE),
+         month=substr(SAMPLE_DATE,6,7),
+         year=as.integer(dyear)) %>% 
+  distinct() %>% 
+  mutate(year=as.numeric(year),
+         month=as.numeric(month)) %>% 
+  filter(month %in% c(6,7,8,9)) %>% 
+  distinct() 
+
+
+#pull waterbodies/parameter combo with at least one sample in each july august, and at least three years in the 80s/early 90s and 2010s
+  decade<-draft %>% 
+    select(LAKE_HISTORY_ID,year,decade,month) %>% 
+    distinct() %>% 
+    mutate(decade=ifelse(year %in% c(1990,1991,1992,1993,1994,1995),'early90s',decade),
+           july=ifelse(month==7,1,0),
+           august=ifelse(month==8,1,0)) %>% 
+    group_by(LAKE_HISTORY_ID,year) %>% 
+    mutate(july=sum(july),
+           august=sum(august)) %>% 
+    ungroup() %>% 
+    filter(july>0,august>0) %>% 
+    select(LAKE_HISTORY_ID,year,decade) %>% 
+    distinct() %>% 
+    group_by(LAKE_HISTORY_ID,decade) %>% 
+    summarize(n=n()) %>% 
+    ungroup() %>% 
+    filter(decade %in% c('2010','1980','early90s')) %>% 
+    spread(decade,n) %>% 
+    filter(`1980`+early90s>2,`2010`>2) %>% 
+    select(LAKE_HISTORY_ID) %>% 
+     distinct()
+
+draft<-merge(decade,draft,by=c('LAKE_HISTORY_ID'),all.x = TRUE)
+draft<-draft %>% 
+  select(LAKE_HISTORY_ID,SAMPLE_DATE,year,month,decade,RSLT_RESULT_VALUE) %>% distinct()
+#make all fields numeric
+draft<-draft %>% 
+    mutate(year=as.numeric(year),
+         month=as.numeric(month))
+#now reduce the data set to one sample per month
+# to do so randomly we use the slice_sample code
+# we use set.seed to ensure the random draw is done the same way each time
+set.seed(52)
+reduced<-draft %>% 
+  group_by(LAKE_HISTORY_ID,year,month) %>%
+  slice_sample(n = 1, replace = FALSE) %>%
+  ungroup() 
+
+rm(list=setdiff(ls(), c("newdata","draft","reduced")))
+```
+
+## KT Slopes
+
+We calculated both the seasonal Kendall Tau slope for the complete and the data set artificially reduced to 1 measure/month.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#calculate seasonal kt slopes
+
+rm(list=setdiff(ls(), c("newdata","draft","reduced")))
+#create slopes table
+slopes<-data.frame(LAKE_HISTORY_ID=c("junk1","junk2"),slope=c(0,1),reduced_slope=c(0,1))
+slopes<-slopes %>% 
+  mutate(LAKE_HISTORY_ID=as.character(LAKE_HISTORY_ID))
+
+library(EnvStats)
+
+#first calculated for all data
+lakes<-unique(draft$LAKE_HISTORY_ID)
+nlakes<-length(lakes)
+
+  for(j in 1:nlakes){
+    draft2<-draft %>% 
+      filter(LAKE_HISTORY_ID==lakes[j]) %>% 
+      select(SAMPLE_DATE,year,month,RSLT_RESULT_VALUE) %>% 
+      distinct() 
+    draft3<-kendallSeasonalTrendTest(RSLT_RESULT_VALUE~month+year,data=draft2)
+    tau<-as.data.frame(t(draft3$estimate))
+    tau$LAKE_HISTORY_ID<-lakes[j]
+    tau$pvalue<-draft3$p.value[2]
+    tau<-tau %>% 
+      mutate(slope=ifelse(pvalue>0.1,0,slope)) %>% 
+      select(LAKE_HISTORY_ID,slope) %>% 
+      distinct() %>% 
+      mutate(reduced_slope=NA)
+    slopes<-merge(slopes,tau,all=TRUE)
+    rm(list=setdiff(ls(), c("newdata",'slopes','draft','reduced','lakes','nlakes','j')))
+  }
+slopes<-slopes %>% 
+  filter(LAKE_HISTORY_ID!="junk1",
+         LAKE_HISTORY_ID!="junk2")
+rm(list=setdiff(ls(), c("newdata",'slopes','draft','reduced')))
+
+#now for the reduced dataset
+lakes<-unique(reduced$LAKE_HISTORY_ID)
+nlakes<-length(lakes)
+
+  for(j in 1:nlakes){
+    reduced2<-reduced %>% 
+      filter(LAKE_HISTORY_ID==lakes[j]) %>% 
+      select(SAMPLE_DATE,year,month,RSLT_RESULT_VALUE) %>% 
+      distinct() 
+    reduced3<-kendallSeasonalTrendTest(RSLT_RESULT_VALUE~month+year,data=reduced2)
+    tau<-as.data.frame(t(reduced3$estimate))
+    tau$LAKE_HISTORY_ID<-lakes[j]
+    tau$pvalue<-reduced3$p.value[2]
+    tau<-tau %>% 
+      mutate(slope=ifelse(pvalue>0.1,0,slope)) %>% 
+      select(LAKE_HISTORY_ID,slope) %>% 
+      distinct()    
+    slopes<-slopes %>% 
+      mutate(reduced_slope=ifelse(LAKE_HISTORY_ID==lakes[j],tau$slope,reduced_slope))
+    rm(list=setdiff(ls(), c("newdata",'slopes','draft','reduced','lakes','nlakes','j')))
+  }
+rm(list=setdiff(ls(), c("newdata",'slopes','draft','reduced')))
+
+
+
+
+DT::datatable(slopes, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+```
